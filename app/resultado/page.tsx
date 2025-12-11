@@ -19,12 +19,44 @@ import {
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { CountdownTimer } from "@/components/countdown-timer"
+import { enviarEvento } from "../../lib/analytics" // Importa a função de analytics centralizada
 
 // 
-// FUNÇÕES HELPER (COPIADAS EXATAMENTE COMO ESPECIFICADO)
+// FUNÇÕES HELPER E DE TRACKING (ROBUSTAS E CENTRALIZADAS)
 // 
 
-// ✅ CORREÇÃO: Função segura para localStorage - GET
+// ✅ LISTA COMPLETA de parâmetros de tracking
+const ALL_TRACKING_PARAMS_LIST = [
+  // UTMs tradicionais
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+  // Facebook
+  'fbclid', 'fb_action_ids', 'fb_action_types', 'fb_source',
+  // Google
+  'gclid', 'gclsrc', 'dclid', 'gbraid', 'wbraid',
+  // Microsoft/Bing
+  'msclkid',
+  // Twitter
+  'twclid',
+  // LinkedIn
+  'li_fat_id',
+  // TikTok
+  'ttclid',
+  // Instagram
+  'igshid',
+  // Snapchat
+  'sclid',
+  // Outros parâmetros comuns
+  'ref', 'source', 'medium', 'campaign', 'term', 'content',
+  'adgroup', 'keyword', 'placement', 'network', 'device', 'creative',
+  'matchtype', 'adposition', 'feeditemid', 'targetid'
+];
+
+// ✅ Função para verificar se um parâmetro é de tracking
+function isTrackingParam(key: string): boolean {
+  return ALL_TRACKING_PARAMS_LIST.some(param => key.toLowerCase().startsWith(param.toLowerCase()));
+}
+
+// ✅ Função segura para localStorage - GET
 function safeLocalStorageGet(key: string): any | null {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
@@ -35,19 +67,19 @@ function safeLocalStorageGet(key: string): any | null {
       return parsed;
     }
   } catch (error) {
-    console.error(`localStorage[${key}] corrompido, removendo:`, error);
+    console.error(`❌ [RESULT - ERROR] localStorage[${key}] corrompido, removendo:`, error);
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
         localStorage.removeItem(key);
       }
     } catch (e) {
-      console.error('Erro ao remover:', e);
+      console.error('❌ [RESULT - ERROR] Erro ao remover item corrompido:', e);
     }
   }
   return null;
 }
 
-// ✅ CORREÇÃO: Função segura para localStorage - SET
+// ✅ Função segura para localStorage - SET
 function safeLocalStorageSet(key: string, value: any) {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
@@ -58,92 +90,109 @@ function safeLocalStorageSet(key: string, value: any) {
       localStorage.setItem(key, JSON.stringify(value));
     }
   } catch (error) {
-    console.error(`Erro ao salvar localStorage[${key}]:`, error);
-    // if (error.name === 'QuotaExceededError') { // Não é necessário limpar cache aqui, apenas no quiz
-    //   clearCorruptedCache(); 
-    // }
+    console.error(`❌ [RESULT - ERROR] Erro ao salvar localStorage[${key}]:`, error);
+    // Não limpa todo o cache aqui, apenas loga o erro.
+    // A limpeza de cache mais agressiva é feita no quiz step se necessário.
   }
 }
 
-// ✅ CORREÇÃO: Função segura para acessar window.quizAnswers
-function safeGetQuizAnswers(): object {
+// ✅ Função para capturar e salvar TODOS os parâmetros de tracking
+function captureAndSaveTrackingParams() {
+  if (typeof window === 'undefined') return {};
+  
   try {
-    if (typeof window !== 'undefined') {
-      return (window as any).quizAnswers || {};
+    const currentUrl = new URL(window.location.href);
+    const capturedParams: { [key: string]: string } = {};
+    
+    for (const [key, value] of currentUrl.searchParams.entries()) {
+      if (isTrackingParam(key)) {
+        capturedParams[key] = decodeURIComponent(value);
+        console.log(`✅ [RESULT - CAPTURE] Capturado da URL: ${key} = ${value}`);
+      }
+    }
+    
+    if (Object.keys(capturedParams).length > 0) {
+      safeLocalStorageSet('capturedTrackingParams', capturedParams);
+      console.log('✅ [RESULT - BACKUP] Parâmetros salvos no localStorage:', capturedParams);
+    }
+    
+    return capturedParams;
+    
+  } catch (error) {
+    console.error('❌ [RESULT - ERROR] Erro ao capturar parâmetros:', error);
+    return {};
+  }
+}
+
+// ✅ Função para recuperar parâmetros do backup
+function getTrackingParamsFromLocalStorage(): { [key: string]: string } {
+  if (typeof window === 'undefined') return {};
+  
+  try {
+    const backup = safeLocalStorageGet('capturedTrackingParams');
+    if (backup && typeof backup === 'object') {
+      console.log('📦 [RESULT - FALLBACK] Parâmetros recuperados do localStorage:', backup);
+      return backup;
     }
   } catch (error) {
-    console.error('Erro ao acessar window.quizAnswers:', error);
+    console.error('❌ [RESULT - ERROR] Erro ao recuperar backup:', error);
   }
+  
   return {};
 }
 
-// ✅ CORREÇÃO: Função segura para definir window.quizAnswers
-function safeSetQuizAnswers(answers: object) {
-  try {
-    if (typeof window !== 'undefined') {
-      (window as any).quizAnswers = answers;
-    }
-  } catch (error) {
-    console.error('Erro ao definir window.quizAnswers:', error);
-  }
-}
-
-// ✅ CORREÇÃO: Função UTM robusta com fallback para checkout
-function getUtmStringForCheckout(): string {
+// ✅ Função para construir a query string completa com todos os parâmetros de tracking
+function buildTrackingQueryString(): string {
   if (typeof window === 'undefined') return '';
   
-  const trackingParams = [
-    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-    'fbclid', 'gclid', 'ref', 'source', 'medium', 'campaign'
-  ];
-  
-  let utmData: { [key: string]: string } = {};
-
   try {
+    let trackingParams: { [key: string]: string } = {};
+
+    // 1. Tenta pegar da URL atual
     const currentUrl = new URL(window.location.href);
     for (const [key, value] of currentUrl.searchParams.entries()) {
-      if (trackingParams.some(param => key.startsWith(param))) {
-        utmData[key] = decodeURIComponent(value);
+      if (isTrackingParam(key)) {
+        trackingParams[key] = decodeURIComponent(value);
       }
     }
 
-    if (Object.keys(utmData).length === 0) {
-      const savedUtms = safeLocalStorageGet('capturedUtms');
-      if (savedUtms && typeof savedUtms === 'object') {
-        utmData = { ...savedUtms };
-      }
+    // 2. Se não encontrou nada na URL, usa o backup do localStorage
+    if (Object.keys(trackingParams).length === 0) {
+      trackingParams = getTrackingParamsFromLocalStorage();
     }
 
     const queryParts: string[] = [];
-    Object.entries(utmData).forEach(([key, value]) => {
-      if (value && value.trim() !== '' && value.length < 100) { // Limite de 100 caracteres para evitar URLs muito longas
+    Object.entries(trackingParams).forEach(([key, value]) => {
+      if (value && value.trim() !== '' && value.length < 200) { // Limite para evitar URLs muito longas
         queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
       }
     });
 
-    const utmString = queryParts.length > 0 ? `&${queryParts.join('&')}` : '';
+    // ✅ Geração de xcod, sck e bid (baseado no formato do Hotmart)
+    const utmSource = trackingParams['utm_source'] || trackingParams['fbclid'] || 'direct';
+    const utmCampaign = trackingParams['utm_campaign'] || 'no_campaign';
+    const utmMedium = trackingParams['utm_medium'] || 'no_medium';
+    const utmContent = trackingParams['utm_content'] || 'no_content';
+    const utmTerm = trackingParams['utm_term'] || 'no_term';
+
+    // Formato Hotmart para xcod/sck: utm_source + hQwK21wXxR + utm_campaign + hQwK21wXxR + ...
+    const xcodValue = `${utmSource}hQwK21wXxR${utmCampaign}hQwK21wXxR${utmMedium}hQwK21wXxR${utmContent}hQwK21wXxR${utmTerm}`;
+    const sckValue = xcodValue; // Geralmente são iguais ou muito similares
+
+    const bidValue = Date.now().toString(); // Timestamp único
+
+    queryParts.push(`xcod=${encodeURIComponent(xcodValue)}`);
+    queryParts.push(`sck=${encodeURIComponent(sckValue)}`);
+    queryParts.push(`bid=${encodeURIComponent(bidValue)}`);
+
+    const queryString = queryParts.join('&');
     
-    console.log('🔍 UTM Final Protegida:', {
-      utmsOriginais: utmData,
-      stringLimpa: utmString
-    });
+    console.log('🔗 [RESULT - QUERY] Query string gerada:', queryString);
+    return queryString;
 
-    return utmString;
   } catch (error) {
-    console.error('Erro ao construir UTM protegida:', error);
+    console.error('❌ [RESULT - ERROR] Erro ao construir query string de tracking:', error);
     return '';
-  }
-}
-
-// ✅ CORREÇÃO: Função segura para envio de eventos
-function enviarEvento(nombre_evento: string, propiedades: object = {}) {
-  try {
-    if (typeof window !== 'undefined' && (window as any).gtag) {
-      (window as any).gtag('event', nombre_evento, propiedades);
-      console.log('Evento enviado:', nombre_evento, propiedades);
-    }
-  } catch (error) {
-    console.error('Erro ao enviar evento:', error);
   }
 }
 
@@ -154,8 +203,6 @@ function enviarEvento(nombre_evento: string, propiedades: object = {}) {
 export default function ResultPageFixed() {
   // ===== ESTADOS =====
   const [isLoaded, setIsLoaded] = useState(false)
-  const [isMounted, setIsMounted] = useState(false) // ✅ NOVO: Estado para hidratação
-  const [isClient, setIsClient] = useState(false)   // ✅ NOVO: Estado para ambiente cliente
   const [userGender, setUserGender] = useState<string>("")
   const [userAnswers, setUserAnswers] = useState<object>({})
   const [currentRevelation, setCurrentRevelation] = useState(0)
@@ -165,75 +212,74 @@ export default function ResultPageFixed() {
   const [decryptedText, setDecryptedText] = useState("")
   const [isDecrypting, setIsDecrypting] = useState(true)
   const [activeBuyers, setActiveBuyers] = useState(Math.floor(Math.random() * 5) + 8)
+  const [isBrowser, setIsBrowser] = useState(false)
 
   // ===== REFS =====
   const contentRef = useRef<HTMLDivElement>(null)
   const startTimeRef = useRef(Date.now())
-  const decryptIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null) // ✅ Tipo corrigido
+  const decryptIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const videoContainerRef = useRef<HTMLDivElement>(null)
   const revelationTrackedRef = useRef<Set<number>>(new Set())
   const scrollTrackedRef = useRef<Set<number>>(new Set())
 
-  // 
-  // ORDEM CORRETA DE useEffect (CRÍTICO - SEM ERROS #310)
-  // 
-
-  // ✅ PRIMEIRO useEffect - HIDRATAÇÃO (Sempre chamado, define ambiente)
+  // ===== VERIFICAÇÃO DE AMBIENTE BROWSER E CAPTURA INICIAL DE PARÂMETROS =====
   useEffect(() => {
-    setIsMounted(true)
-    setIsClient(typeof window !== 'undefined' && typeof document !== 'undefined')
-  }, [])
+    setIsBrowser(typeof window !== 'undefined' && typeof document !== 'undefined');
+    // ✅ NOVA: Captura e salva parâmetros de tracking na inicialização da página de resultado
+    captureAndSaveTrackingParams();
+  }, []);
 
-  // ✅ SEGUNDO useEffect - INICIALIZAÇÃO (Protegido por isMounted/isClient)
+  // ===== PERSONALIZAÇÃO BASEADA NO QUIZ =====
   useEffect(() => {
-    if (!isMounted || !isClient) return // ✅ Proteção contra erro #310
+    if (!isBrowser) return;
 
     try {
-      const savedGender = safeLocalStorageGet("userGender") || ""
-      const savedAnswers = safeLocalStorageGet("quizAnswers") || {}
+      const savedGender = safeLocalStorageGet("userGender") || "";
+      const savedAnswers = safeLocalStorageGet("quizAnswers") || {};
       
       if (!savedGender || Object.keys(savedAnswers).length === 0) {
-        console.warn("Dados do quiz não encontrados");
+        console.warn("⚠️ [RESULT - WARNING] Dados do quiz não encontrados no localStorage.");
         enviarEvento('aviso_dados_quiz_nao_encontrados', {
           timestamp: new Date().toISOString()
         });
       }
       
-      setUserGender(savedGender)
-      setUserAnswers(savedAnswers)
+      setUserGender(savedGender);
+      setUserAnswers(savedAnswers);
 
-      setTimeout(() => setIsLoaded(true), 300)
+      setTimeout(() => setIsLoaded(true), 300);
 
-      console.log('🔍 UTMs atuais na página resultado:', window.location.search);
-      console.log('🔗 UTM string que será anexada:', getUtmStringForCheckout());
+      console.log('🔍 [RESULT - DEBUG] UTMs atuais na URL da página resultado:', window.location.search);
+      console.log('🔗 [RESULT - DEBUG] Query string que será usada para checkout:', buildTrackingQueryString());
 
       enviarEvento("viu_resultado_dopamina_v4", {
         timestamp: new Date().toISOString(),
         user_gender: savedGender,
         version: "matrix_continuity",
         tem_dados_quiz: Object.keys(savedAnswers).length > 0,
-        utm_params: window.location.search
-      })
+        utm_params: window.location.search, // Log das UTMs da URL
+        tracking_query_string: buildTrackingQueryString() // Log da query string completa
+      });
 
-      startTimeRef.current = Date.now()
+      startTimeRef.current = Date.now();
 
       const interval = setInterval(() => {
         setActiveBuyers(prev => {
-          const newValue = prev + Math.floor(Math.random() * 2) + 1
+          const newValue = prev + Math.floor(Math.random() * 2) + 1;
           
           enviarEvento('contador_compradores_atualizado', {
             novo_valor: newValue,
             timestamp: new Date().toISOString()
           });
           
-          return newValue
-        })
-      }, 180000)
+          return newValue;
+        });
+      }, 180000);
 
       return () => {
-        clearInterval(interval)
-        if (isClient) { // ✅ Usando isClient
-          const timeSpent = (Date.now() - startTimeRef.current) / 1000
+        clearInterval(interval);
+        if (isBrowser) {
+          const timeSpent = (Date.now() - startTimeRef.current) / 1000;
           enviarEvento('tempo_pagina_resultado_dopamina', {
             tempo_segundos: timeSpent,
             conversao: false,
@@ -243,26 +289,26 @@ export default function ResultPageFixed() {
             viu_cta_final: showFinalCTA,
             version: "matrix_continuity",
             timestamp: new Date().toISOString()
-          })
+          });
         }
-      }
+      };
     } catch (error) {
-      console.error("Erro na inicialização:", error)
+      console.error("❌ [RESULT - ERROR] Erro na inicialização da página de resultado:", error);
       
       enviarEvento('erro_inicializacao_resultado', {
         erro: error instanceof Error ? error.message : 'Erro desconhecido',
         timestamp: new Date().toISOString()
       });
     }
-  }, [isMounted, isClient, currentRevelation, showVSL, showOffer, showFinalCTA]) // ✅ Dependências atualizadas
+  }, [isBrowser, currentRevelation, showVSL, showOffer, showFinalCTA]);
 
-  // ✅ TERCEIRO useEffect - PROGRESSÃO AUTOMÁTICA DE REVELAÇÕES (Protegido)
+  // ===== PROGRESSÃO AUTOMÁTICA DE REVELAÇÕES ===== 
   useEffect(() => {
-    if (!isMounted || !isClient) return // ✅ Proteção contra erro #310
+    if (!isBrowser) return; // Garante que só roda no cliente
 
     try {
       if (decryptIntervalRef.current) {
-        clearInterval(decryptIntervalRef.current)
+        clearInterval(decryptIntervalRef.current);
       }
 
       decryptIntervalRef.current = setInterval(() => {
@@ -331,7 +377,7 @@ export default function ResultPageFixed() {
             });
           }
         }, 12000),
-      ]
+      ];
 
       return () => {
         if (decryptIntervalRef.current) {
@@ -339,20 +385,20 @@ export default function ResultPageFixed() {
           decryptIntervalRef.current = null;
         }
         timers.forEach(clearTimeout);
-      }
+      };
     } catch (error) {
-      console.error("Erro na progressão de revelações:", error)
+      console.error("❌ [RESULT - ERROR] Erro na progressão de revelações:", error);
       
       enviarEvento('erro_progressao_revelacoes', {
         erro: error instanceof Error ? error.message : 'Erro desconhecido',
         timestamp: new Date().toISOString()
       });
     }
-  }, [isMounted, isClient, userGender]) // ✅ Dependências atualizadas
+  }, [isBrowser, userGender]);
 
-  // ✅ QUARTO useEffect - SCROLL TRACKING (Protegido)
+  // ===== SCROLL TRACKING =====
   useEffect(() => {
-    if (!isMounted || !isClient) return // ✅ Proteção contra erro #310
+    if (!isBrowser) return;
 
     const handleScroll = () => {
       const scrollTop = window.pageYOffset;
@@ -372,11 +418,11 @@ export default function ResultPageFixed() {
     
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [isMounted, isClient, userGender]); // ✅ Dependências atualizadas
+  }, [isBrowser, userGender]);
 
-  // ✅ QUINTO useEffect - VSL VIDEO (Protegido)
+  // ===== VSL VIDEO EMBED =====
   useEffect(() => {
-    if (!isMounted || !isClient || !showVSL) return // ✅ Proteção contra erro #310
+    if (!showVSL || !isBrowser || !videoContainerRef.current) return;
 
     const timer = setTimeout(() => {
       if (videoContainerRef.current) {
@@ -387,7 +433,7 @@ export default function ResultPageFixed() {
               style="display: block; margin: 0 auto; width: 100%; height: 100%; position: absolute; top: 0; left: 0;"
             ></vturb-smartplayer>
           </div>
-        `
+        `;
 
         const videoElement = videoContainerRef.current.querySelector('vturb-smartplayer');
         if (videoElement) {
@@ -400,24 +446,24 @@ export default function ResultPageFixed() {
           });
         }
 
-        const existingScript = document.querySelector('script[src="https://scripts.converteai.net/ea3c2dc1-1976-40a2-b0fb-c5055f82bfaf/players/6938c3eeb96ec714286a4c2b/v4/player.js"]')
+        const existingScript = document.querySelector('script[src="https://scripts.converteai.net/ea3c2dc1-1976-40a2-b0fb-c5055f82bfaf/players/6938c3eeb96ec714286a4c2b/v4/player.js"]');
         
         if (!existingScript) {
-          const s = document.createElement("script")
-          s.src = "https://scripts.converteai.net/ea3c2dc1-1976-40a2-b0fb-c5055f82bfaf/players/6938c3eeb96ec714286a4c2b/v4/player.js"
-          s.async = true
+          const s = document.createElement("script");
+          s.src = "https://scripts.converteai.net/ea3c2dc1-1976-40a2-b0fb-c5055f82bfaf/players/6938c3eeb96ec714286a4c2b/v4/player.js";
+          s.async = true;
           
           s.onload = () => {
-            console.log("Script VTurb carregado com sucesso!")
+            console.log("✅ [RESULT - VSL] Script VTurb carregado com sucesso!");
             
             enviarEvento('video_vsl_carregado_sucesso', {
               timestamp: new Date().toISOString(),
               user_gender: userGender
             });
-          }
+          };
           
           s.onerror = () => {
-            console.error("Erro ao carregar script VTurb")
+            console.error("❌ [RESULT - VSL] Erro ao carregar script VTurb");
             
             enviarEvento('erro_carregar_video_vsl', {
               timestamp: new Date().toISOString(),
@@ -434,48 +480,46 @@ export default function ResultPageFixed() {
                 </div>
               `;
             }
-          }
+          };
           
-          document.head.appendChild(s)
+          document.head.appendChild(s);
         }
       }
-    }, 500)
+    }, 500);
 
-    return () => clearTimeout(timer)
-  }, [showVSL, isMounted, isClient, userGender]) // ✅ Dependências atualizadas
+    return () => clearTimeout(timer);
+  }, [showVSL, isBrowser, userGender]);
 
-  // 
-  // FUNÇÕES DE PERSONALIZAÇÃO E CALLBACKS
-  // 
-
-  const getPronoun = useCallback(() => userGender === "SOY MUJER" ? "él" : "ella", [userGender])
-  const getOtherPronoun = useCallback(() => userGender === "SOY MUJER" ? "lo" : "la", [userGender])
+  // ===== FUNÇÕES DE PERSONALIZAÇÃO =====
+  const getPronoun = useCallback(() => userGender === "SOY MUJER" ? "él" : "ella", [userGender]);
+  const getOtherPronoun = useCallback(() => userGender === "SOY MUJER" ? "lo" : "la", [userGender]);
 
   const getPersonalizedSituation = useCallback(() => {
-    const situation = (userAnswers as any)?.question7 || "contacto limitado"
+    const situation = userAnswers?.question7 || "contacto limitado";
     if (typeof situation === 'string') {
-      if (situation.includes("contacto cero")) return "Contacto cero"
-      if (situation.includes("ignora")) return "Te ignora"
-      if (situation.includes("bloqueado")) return "Bloqueado"
-      if (situation.includes("cosas necesarias")) return "Solo cosas necesarias"
-      if (situation.includes("charlamos")) return "Charlas ocasionales"
-      if (situation.includes("amigos")) return "Solo amigos"
+      if (situation.includes("contacto cero")) return "Contacto cero";
+      if (situation.includes("ignora")) return "Te ignora";
+      if (situation.includes("bloqueado")) return "Bloqueado";
+      if (situation.includes("cosas necesarias")) return "Solo cosas necesarias";
+      if (situation.includes("charlamos")) return "Charlas ocasionales";
+      if (situation.includes("amigos")) return "Solo amigos";
     }
-    return "Contacto limitado"
-  }, [userAnswers])
+    return "Contacto limitado";
+  }, [userAnswers]);
 
-  // ✅ CORREÇÃO: Função de compra com UTM preservada
+  // ✅ CORREÇÃO: Função de compra com UTM preservada e xcod/sck/bid
   const handlePurchase = useCallback((position = "principal") => {
-    if (!isClient) return // ✅ Usando isClient
+    if (!isBrowser) return;
 
     try {
-      const timeToAction = (Date.now() - startTimeRef.current) / 1000
+      const timeToAction = (Date.now() - startTimeRef.current) / 1000;
       
-      const utmString = getUtmStringForCheckout(); // ✅ Usando a nova função UTM
+      // ✅ NOVA: Construir URL com TODOS os parâmetros de tracking
+      const trackingQueryString = buildTrackingQueryString();
       const baseCheckoutUrl = "https://pay.hotmart.com/F100142422S?off=efckjoa7&checkoutMode=10";
-      const fullCheckoutUrl = `${baseCheckoutUrl}${utmString}`;
+      const fullCheckoutUrl = `${baseCheckoutUrl}&${trackingQueryString}`; // Adiciona com '&' pois base já tem '?'
       
-      console.log('🔗 URL PROTEGIDA do checkout:', fullCheckoutUrl); // ✅ ADICIONAR
+      console.log('🔗 [RESULT - CHECKOUT] URL final do checkout com tracking:', fullCheckoutUrl);
       
       enviarEvento("clicou_comprar_dopamina_v4", {
         posicao: position,
@@ -489,8 +533,8 @@ export default function ResultPageFixed() {
         viu_oferta: showOffer,
         viu_cta_final: showFinalCTA,
         version: "matrix_continuity",
-        utm_data: utmString
-      })
+        utm_data: trackingQueryString // Incluir a query string completa no evento
+      });
       
       enviarEvento('tempo_pagina_resultado_dopamina', {
         tempo_segundos: timeToAction,
@@ -498,14 +542,14 @@ export default function ResultPageFixed() {
         posicao_cta: position,
         version: "matrix_continuity",
         timestamp: new Date().toISOString(),
-        checkout_url: fullCheckoutUrl
-      })
+        checkout_url: fullCheckoutUrl // Log da URL para debug
+      });
       
       setTimeout(() => {
-        const paymentWindow = window.open(fullCheckoutUrl, "_blank")
+        const paymentWindow = window.open(fullCheckoutUrl, "_blank");
         
         if (!paymentWindow) {
-          console.error("Popup bloqueado - tentando redirecionamento");
+          console.error("❌ [RESULT - CHECKOUT] Popup bloqueado - tentando redirecionamento");
           
           enviarEvento('popup_bloqueado_resultado', {
             posicao: position,
@@ -513,11 +557,11 @@ export default function ResultPageFixed() {
             checkout_url: fullCheckoutUrl
           });
           
-          // window.location.href = fullCheckoutUrl
+          window.location.href = fullCheckoutUrl;
         }
-      }, 100)
+      }, 100);
     } catch (error) {
-      console.error("Erro na função de compra:", error)
+      console.error("❌ [RESULT - ERROR] Erro na função de compra:", error);
       
       enviarEvento('erro_clicou_comprar', {
         posicao: position,
@@ -525,30 +569,28 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [currentRevelation, userGender, getPersonalizedSituation, isClient, showVSL, showOffer, showFinalCTA]) // ✅ Dependências atualizadas
+  }, [currentRevelation, userGender, getPersonalizedSituation, isBrowser, showVSL, showOffer, showFinalCTA]);
 
   // ===== FEEDBACK TÁTIL =====
   const handleTouchFeedback = useCallback(() => {
-    if (isClient && 'vibrate' in navigator) { // ✅ Usando isClient
-      navigator.vibrate(10)
+    if (isBrowser && 'vibrate' in navigator) {
+      navigator.vibrate(10);
     }
-  }, [isClient])
+  }, [isBrowser]);
 
-  // 
-  // RENDERING CONDICIONAL DE LOADING SCREEN (CRÍTICO PARA HIDRATAÇÃO)
-  // 
-  if (!isMounted || !isClient) {
+  // ===== RENDERIZAÇÃO CONDICIONAL DE LOADING SCREEN (CRÍTICO PARA HIDRATAÇÃO) =====
+  if (!isBrowser) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="text-green-400 text-xl font-mono animate-pulse">
           Cargando...
         </div>
       </div>
-    )
+    );
   }
 
   // 
-  // JSX PRINCIPAL
+  // JSX PRINCIPAL (O RESTO DO CÓDIGO PERMANECE INALTERADO)
   // 
   return (
     <>
@@ -690,6 +732,7 @@ export default function ResultPageFixed() {
                       </p>
                     </div>
 
+                    {/* ✅ CONTAINER DO VÍDEO COM dangerouslySetInnerHTML */}
                     <div className="max-w-3xl mx-auto mb-6">
                       <div 
                         ref={videoContainerRef}
@@ -818,7 +861,7 @@ export default function ResultPageFixed() {
                           ⏰ PRECIO ESPECIAL PARA QUIENES VIERON LA DEMOSTRACIÓN:
                         </p>
                         <div className="mobile-countdown font-black text-white mb-2">
-                          <CountdownTimer />
+                          <CountdownTimer minutes={47} seconds={0} />
                         </div>
                         <p className="text-red-300 mobile-small-text">
                           Después vuelve a $67. Solo para quienes completaron el análisis.
@@ -907,7 +950,7 @@ export default function ResultPageFixed() {
               )}
             </AnimatePresence>
 
-            {/* ===== SEÇÃO 5: GARANTIA RÁPIDA ===== */}
+            {/* ===== SEÇÃO 5: GARANTÍA RÁPIDA ===== */}
             <AnimatePresence>
               {showFinalCTA && (
                 <motion.div
@@ -1214,7 +1257,7 @@ export default function ResultPageFixed() {
 
           @media (min-width: 640px) {
             .max-w-4xl { max-width: 56rem !important; }
-            .max-w-3xl { max-w: 48rem !important; }
+            .max-w-3xl { max-width: 48rem !important; }
             .max-w-2xl { max-w: 42rem !important; }
             .max-w-md { max-w: 28rem !important; }
           }
@@ -1255,5 +1298,5 @@ export default function ResultPageFixed() {
         `}</style>
       </div>
     </>
-  )
+  );
 }
