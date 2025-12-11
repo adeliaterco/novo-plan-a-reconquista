@@ -47,10 +47,11 @@ export default function RootLayout({
           }}
         />
 
-        {/* UTMFY Tracking - Configuração para Hotmart */}
+        {/* UTMFY Tracking - Configuração CORRIGIDA para excluir Hotmart */}
         <script
           src="https://cdn.utmify.com.br/scripts/utms/latest.js"
           data-utmify-prevent-subids
+          data-utmify-exclude-domains="pay.hotmart.com"
           async
           defer
         ></script>
