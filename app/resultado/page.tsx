@@ -21,120 +21,37 @@ import { Card, CardContent } from "@/components/ui/card"
 import { CountdownTimer } from "@/components/countdown-timer"
 import { enviarEvento } from "../../lib/analytics"
 
-// ✅ FUNÇÃO HELPER: Função segura para localStorage.getItem
-function safeLocalStorageGet(key) {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const item = localStorage.getItem(key);
-      if (!item) return null;
-      
-      const parsed = JSON.parse(item);
-      return parsed;
-    }
-  } catch (error) {
-    console.error(`localStorage[${key}] corrompido, removendo:`, error);
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.removeItem(key);
-      }
-    } catch (e) {
-      console.error('Erro ao remover:', e);
-    }
-  }
-  return null;
-}
-
-// ✅ FUNÇÃO HELPER: Função segura para localStorage.setItem
-function safeLocalStorageSet(key, value) {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      if (value === undefined || value === null) {
-        localStorage.removeItem(key);
-        return;
-      }
-      localStorage.setItem(key, JSON.stringify(value));
-    }
-  } catch (error) {
-    console.error(`Erro ao salvar localStorage[${key}]:`, error);
-    // Opcional: Adicionar tratamento para QuotaExceededError se necessário
-  }
-}
-
-// ✅ FUNÇÃO HELPER: Função segura para acessar window.quizAnswers
-function safeGetQuizAnswers() {
-  try {
-    if (typeof window !== 'undefined') {
-      return window.quizAnswers || {};
-    }
-  } catch (error) {
-    console.error('Erro ao acessar window.quizAnswers:', error);
-  }
-  return {};
-}
-
-// ✅ FUNÇÃO HELPER: Função segura para definir window.quizAnswers
-function safeSetQuizAnswers(answers) {
-  try {
-    if (typeof window !== 'undefined') {
-      window.quizAnswers = answers;
-    }
-  } catch (error) {
-    console.error('Erro ao definir window.quizAnswers:', error);
-  }
-}
-
-// ✅ MELHORIA #3: SUBSTITUIR FUNÇÃO getUtmString()
-function getUtmStringForCheckout() {
+// ✅ CORREÇÃO: Função UTM para checkout
+function getUtmString() {
   if (typeof window === 'undefined') return '';
   
-  const trackingParams = [
-    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-    'fbclid', 'gclid', 'ref', 'source', 'medium', 'campaign'
-  ];
-  
-  let utmData = {};
-
   try {
     const currentUrl = new URL(window.location.href);
-    for (const [key, value] of currentUrl.searchParams.entries()) {
-      if (trackingParams.some(param => key.startsWith(param))) {
-        utmData[key] = decodeURIComponent(value);
-      }
-    }
-
-    if (Object.keys(utmData).length === 0) {
-      const savedUtms = safeLocalStorageGet('capturedUtms');
-      if (savedUtms) {
-        const parsed = savedUtms; // Já é um objeto devido ao safeLocalStorageGet
-        utmData = { ...parsed };
-      }
-    }
-
-    const queryParts = [];
-    Object.entries(utmData).forEach(([key, value]) => {
-      if (value && value.trim() !== '' && value.length < 100) {
-        queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
-      }
-    });
-
-    const utmString = queryParts.length > 0 ? `&${queryParts.join('&')}` : '';
+    const utmParams = new URLSearchParams();
     
-    console.log('🔍 UTM Final Protegida:', {
-      utmsOriginais: utmData,
-      stringLimpa: utmString
-    });
-
-    return utmString;
+    // Coleta TODOS os parâmetros de tracking
+    for (const [key, value] of currentUrl.searchParams.entries()) {
+      if (key.startsWith('utm_') || 
+          key.startsWith('fbclid') || 
+          key.startsWith('gclid') || 
+          key.startsWith('ref') ||
+          key.startsWith('source') ||
+          key.startsWith('medium') ||
+          key.startsWith('campaign')) {
+        utmParams.append(key, value);
+      }
+    }
+    
+    const utmString = utmParams.toString();
+    return utmString ? `&${utmString}` : ''; // ✅ usando & porque URL já tem parâmetros
   } catch (error) {
-    console.error('Erro ao construir UTM protegida:', error);
+    console.error('Erro ao construir UTM para checkout:', error);
     return '';
   }
 }
 
 export default function ResultPageFixed() {
   // ===== ESTADOS =====
-  const [isMounted, setIsMounted] = useState(false) // ✅ MELHORIA #1: Estado de montagem
-  const [isClient, setIsClient] = useState(false)   // ✅ MELHORIA #1: Estado de cliente (browser)
   const [isLoaded, setIsLoaded] = useState(false)
   const [userGender, setUserGender] = useState<string>("")
   const [userAnswers, setUserAnswers] = useState<object>({})
@@ -145,7 +62,7 @@ export default function ResultPageFixed() {
   const [decryptedText, setDecryptedText] = useState("")
   const [isDecrypting, setIsDecrypting] = useState(true)
   const [activeBuyers, setActiveBuyers] = useState(Math.floor(Math.random() * 5) + 8)
-  // REMOVIDO: const [isBrowser, setIsBrowser] = useState(false) // ✅ MELHORIA #5: isBrowser removido
+  const [isBrowser, setIsBrowser] = useState(false)
 
   const contentRef = useRef<HTMLDivElement>(null)
   const startTimeRef = useRef(Date.now())
@@ -154,31 +71,18 @@ export default function ResultPageFixed() {
   const revelationTrackedRef = useRef<Set<number>>(new Set())
   const scrollTrackedRef = useRef<Set<number>>(new Set())
 
-  // ✅ MELHORIA #1: useEffect de hidratação (PRIMEIRO useEffect)
+  // ===== VERIFICAÇÃO DE AMBIENTE BROWSER =====
   useEffect(() => {
-    setIsMounted(true)
-    setIsClient(typeof window !== 'undefined')
+    setIsBrowser(typeof window !== 'undefined' && typeof document !== 'undefined')
   }, [])
-
-  // ✅ MELHORIA #1: Renderização condicional (ANTES de qualquer JSX)
-  if (!isMounted || !isClient) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-green-400 text-xl font-mono animate-pulse">
-          Cargando...
-        </div>
-      </div>
-    )
-  }
 
   // ===== PERSONALIZAÇÃO BASEADA NO QUIZ =====
   useEffect(() => {
-    // ✅ MELHORIA #2: Proteger useEffect
-    if (!isClient || !isMounted) return
+    if (!isBrowser) return
 
     try {
-      const savedGender = safeLocalStorageGet("userGender") || "" // ✅ FUNÇÃO HELPER
-      const savedAnswers = safeLocalStorageGet("quizAnswers") || {} // ✅ FUNÇÃO HELPER
+      const savedGender = localStorage.getItem("userGender") || ""
+      const savedAnswers = JSON.parse(localStorage.getItem("quizAnswers") || "{}")
       
       if (!savedGender || Object.keys(savedAnswers).length === 0) {
         console.warn("Dados do quiz não encontrados");
@@ -194,7 +98,7 @@ export default function ResultPageFixed() {
 
       // ✅ NOVO: Log das UTMs atuais
       console.log('🔍 UTMs atuais na página resultado:', window.location.search);
-      console.log('🔗 UTM string que será anexada:', getUtmStringForCheckout()); // ✅ MELHORIA #3
+      console.log('🔗 UTM string que será anexada:', getUtmString());
 
       enviarEvento("viu_resultado_dopamina_v4", {
         timestamp: new Date().toISOString(),
@@ -221,7 +125,7 @@ export default function ResultPageFixed() {
 
       return () => {
         clearInterval(interval)
-        if (isClient) { // ✅ MELHORIA #5: isBrowser -> isClient
+        if (isBrowser) {
           const timeSpent = (Date.now() - startTimeRef.current) / 1000
           enviarEvento('tempo_pagina_resultado_dopamina', {
             tempo_segundos: timeSpent,
@@ -243,13 +147,10 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [isClient, isMounted, currentRevelation, showVSL, showOffer, showFinalCTA]) // ✅ MELHORIA #2: Adicionar isClient, isMounted
+  }, [isBrowser, currentRevelation, showVSL, showOffer, showFinalCTA])
 
   // ===== PROGRESSÃO AUTOMÁTICA DE REVELAÇÕES ===== 
   useEffect(() => {
-    // ✅ MELHORIA #2: Proteger useEffect
-    if (!isClient || !isMounted) return
-
     try {
       if (decryptIntervalRef.current) {
         clearInterval(decryptIntervalRef.current)
@@ -338,12 +239,9 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [isClient, isMounted, userGender]) // ✅ MELHORIA #2: Adicionar isClient, isMounted
+  }, [userGender])
 
   useEffect(() => {
-    // ✅ MELHORIA #2: Proteger useEffect
-    if (!isClient || !isMounted) return
-
     const handleScroll = () => {
       const scrollTop = window.pageYOffset;
       const docHeight = document.documentElement.scrollHeight - window.innerHeight;
@@ -362,10 +260,10 @@ export default function ResultPageFixed() {
     
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [isClient, isMounted, userGender]); // ✅ MELHORIA #2: Adicionar isClient, isMounted
+  }, [userGender]);
 
   useEffect(() => {
-    // ✅ MELHORIA #2: Proteger useEffect
+    if (!showVSL || !isBrowser || !videoContainerRef.current) return
 
     const timer = setTimeout(() => {
       if (videoContainerRef.current) {
@@ -431,7 +329,7 @@ export default function ResultPageFixed() {
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [showVSL, isClient, isMounted, userGender]) // ✅ MELHORIA #2: Adicionar isClient, isMounted // ✅ MELHORIA #5: isBrowser -> isClient
+  }, [showVSL, isBrowser, userGender])
 
   // ===== FUNÇÕES DE PERSONALIZAÇÃO =====
   const getPronoun = useCallback(() => userGender === "SOY MUJER" ? "él" : "ella", [userGender])
@@ -450,20 +348,22 @@ export default function ResultPageFixed() {
     return "Contacto limitado"
   }, [userAnswers])
 
-  // ✅ MELHORIA #4: ATUALIZAR handlePurchase
+  // ✅ CORREÇÃO: Função de compra com UTM preservada
   const handlePurchase = useCallback((position = "principal") => {
-    if (!isClient) return // ✅ MUDANÇA AQUI: isBrowser -> isClient
+    if (!isBrowser) return
 
     try {
       const timeToAction = (Date.now() - startTimeRef.current) / 1000
       
-      const utmString = getUtmStringForCheckout(); // ✅ MUDANÇA AQUI: Usando a nova função
+      // ✅ NOVO: Construir URL com UTMs
+      const utmString = getUtmString();
       const baseCheckoutUrl = "https://pay.hotmart.com/F100142422S?off=efckjoa7&checkoutMode=10";
       const fullCheckoutUrl = `${baseCheckoutUrl}${utmString}`;
       
-      console.log('🔗 URL PROTEGIDA do checkout:', fullCheckoutUrl); // ✅ ADICIONAR
+      // ✅ DEBUG: Log da URL final
+      console.log('🔗 URL do checkout com UTM:', fullCheckoutUrl);
       
-      // ... resto do código igual
+      // ✅ NOVO: Rastreamento detalhado de compra
       enviarEvento("clicou_comprar_dopamina_v4", {
         posicao: position,
         revelacao_atual: currentRevelation,
@@ -490,7 +390,7 @@ export default function ResultPageFixed() {
       })
       
       setTimeout(() => {
-        const paymentWindow = window.open(fullCheckoutUrl, "_blank")
+        const paymentWindow = window.open(fullCheckoutUrl, "_blank") // ✅ CORREÇÃO: URL com UTM
         
         if (!paymentWindow) {
           console.error("Popup bloqueado - tentando redirecionamento");
@@ -501,7 +401,7 @@ export default function ResultPageFixed() {
             checkout_url: fullCheckoutUrl
           });
           
-          // window.location.href = fullCheckoutUrl
+          // window.location.href = fullCheckoutUrl // ✅ CORREÇÃO: URL com UTM
         }
       }, 100)
     } catch (error) {
@@ -513,16 +413,18 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [currentRevelation, userGender, getPersonalizedSituation, isClient, showVSL, showOffer, showFinalCTA]) // ✅ MUDANÇA AQUI: isBrowser -> isClient
+  }, [currentRevelation, userGender, getPersonalizedSituation, isBrowser, showVSL, showOffer, showFinalCTA])
 
   // ===== FEEDBACK TÁTIL =====
   const handleTouchFeedback = useCallback(() => {
-    if (isClient && 'vibrate' in navigator) { // ✅ MELHORIA #5: isBrowser -> isClient
+    if (isBrowser && 'vibrate' in navigator) {
       navigator.vibrate(10)
     }
-  }, [isClient]) // ✅ MELHORIA #5: isBrowser -> isClient
+  }, [isBrowser])
 
-  // REMOVIDO: if (!isBrowser) { return <div className="min-h-screen bg-black flex items-center justify-center text-white">Cargando...</div> } // ✅ MELHORIA #5: Removido, substituído pela verificação de hidratação
+  if (!isBrowser) {
+    return <div className="min-h-screen bg-black flex items-center justify-center text-white">Cargando...</div>
+  }
 
   return (
     <>
