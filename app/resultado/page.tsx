@@ -21,37 +21,62 @@ import { Card, CardContent } from "@/components/ui/card"
 import { CountdownTimer } from "@/components/countdown-timer"
 import { enviarEvento } from "../../lib/analytics"
 
-// ✅ CORREÇÃO: Função UTM para checkout
-function getUtmString() {
+// ✅ MELHORIA #2: Função UTM blindada contra corrupção
+function getUtmStringForCheckout() {
   if (typeof window === 'undefined') return '';
   
+  const trackingParams = [
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+    'fbclid', 'gclid', 'ref', 'source', 'medium', 'campaign'
+  ];
+  
+  let utmData = {};
+
   try {
+    // 1. Pegar da URL atual
     const currentUrl = new URL(window.location.href);
-    const utmParams = new URLSearchParams();
-    
-    // Coleta TODOS os parâmetros de tracking
     for (const [key, value] of currentUrl.searchParams.entries()) {
-      if (key.startsWith('utm_') || 
-          key.startsWith('fbclid') || 
-          key.startsWith('gclid') || 
-          key.startsWith('ref') ||
-          key.startsWith('source') ||
-          key.startsWith('medium') ||
-          key.startsWith('campaign')) {
-        utmParams.append(key, value);
+      if (trackingParams.some(param => key.startsWith(param))) {
+        utmData[key] = decodeURIComponent(value);
       }
     }
+
+    // 2. Fallback do localStorage
+    if (Object.keys(utmData).length === 0) {
+      const savedUtms = localStorage.getItem('capturedUtms');
+      if (savedUtms) {
+        const parsed = JSON.parse(savedUtms);
+        utmData = { ...parsed };
+      }
+    }
+
+    // 3. Construir string limpa (máximo 100 chars por parâmetro)
+    const queryParts = [];
+    Object.entries(utmData).forEach(([key, value]) => {
+      if (value && value.trim() !== '' && value.length < 100) {
+        queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+      }
+    });
+
+    const utmString = queryParts.length > 0 ? `&${queryParts.join('&')}` : '';
     
-    const utmString = utmParams.toString();
-    return utmString ? `&${utmString}` : ''; // ✅ usando & porque URL já tem parâmetros
+    console.log('🔍 UTM Final Protegida:', {
+      utmsOriginais: utmData,
+      stringLimpa: utmString
+    });
+
+    return utmString;
   } catch (error) {
-    console.error('Erro ao construir UTM para checkout:', error);
+    console.error('Erro ao construir UTM protegida:', error);
     return '';
   }
 }
 
 export default function ResultPageFixed() {
-  // ===== ESTADOS =====
+  // ✅ MELHORIA #1: Verificação de hidratação
+  const [isMounted, setIsMounted] = useState(false)
+  
+  // ===== ESTADOS EXISTENTES =====
   const [isLoaded, setIsLoaded] = useState(false)
   const [userGender, setUserGender] = useState<string>("")
   const [userAnswers, setUserAnswers] = useState<object>({})
@@ -70,6 +95,16 @@ export default function ResultPageFixed() {
   const videoContainerRef = useRef<HTMLDivElement>(null)
   const revelationTrackedRef = useRef<Set<number>>(new Set())
   const scrollTrackedRef = useRef<Set<number>>(new Set())
+
+  // ✅ MELHORIA #1: useEffect para verificação de montagem
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
+
+  // ✅ MELHORIA #1: Renderização condicional
+  if (!isMounted) {
+    return <div className="min-h-screen bg-black flex items-center justify-center text-white">Cargando...</div>
+  }
 
   // ===== VERIFICAÇÃO DE AMBIENTE BROWSER =====
   useEffect(() => {
@@ -96,16 +131,16 @@ export default function ResultPageFixed() {
 
       setTimeout(() => setIsLoaded(true), 300)
 
-      // ✅ NOVO: Log das UTMs atuais
+      // ✅ Log das UTMs atuais com função protegida
       console.log('🔍 UTMs atuais na página resultado:', window.location.search);
-      console.log('🔗 UTM string que será anexada:', getUtmString());
+      console.log('🔗 UTM string protegida que será anexada:', getUtmStringForCheckout());
 
       enviarEvento("viu_resultado_dopamina_v4", {
         timestamp: new Date().toISOString(),
         user_gender: savedGender,
         version: "matrix_continuity",
         tem_dados_quiz: Object.keys(savedAnswers).length > 0,
-        utm_params: window.location.search // ✅ NOVO: Log das UTMs
+        utm_params: window.location.search
       })
 
       startTimeRef.current = Date.now()
@@ -348,22 +383,21 @@ export default function ResultPageFixed() {
     return "Contacto limitado"
   }, [userAnswers])
 
-  // ✅ CORREÇÃO: Função de compra com UTM preservada
+  // ✅ MELHORIA #3: Função de compra blindada
   const handlePurchase = useCallback((position = "principal") => {
     if (!isBrowser) return
 
     try {
       const timeToAction = (Date.now() - startTimeRef.current) / 1000
       
-      // ✅ NOVO: Construir URL com UTMs
-      const utmString = getUtmString();
+      // ✅ USAR: Função UTM protegida
+      const utmString = getUtmStringForCheckout();
       const baseCheckoutUrl = "https://pay.hotmart.com/F100142422S?off=efckjoa7&checkoutMode=10";
       const fullCheckoutUrl = `${baseCheckoutUrl}${utmString}`;
       
-      // ✅ DEBUG: Log da URL final
-      console.log('🔗 URL do checkout com UTM:', fullCheckoutUrl);
+      console.log('🔗 URL PROTEGIDA do checkout:', fullCheckoutUrl);
       
-      // ✅ NOVO: Rastreamento detalhado de compra
+      // Manter todos os eventos de rastreamento
       enviarEvento("clicou_comprar_dopamina_v4", {
         posicao: position,
         revelacao_atual: currentRevelation,
@@ -376,7 +410,6 @@ export default function ResultPageFixed() {
         viu_oferta: showOffer,
         viu_cta_final: showFinalCTA,
         version: "matrix_continuity",
-        // ✅ NOVO: Incluir UTMs no evento
         utm_data: utmString
       })
       
@@ -386,24 +419,25 @@ export default function ResultPageFixed() {
         posicao_cta: position,
         version: "matrix_continuity",
         timestamp: new Date().toISOString(),
-        checkout_url: fullCheckoutUrl // ✅ NOVO: Log da URL para debug
+        checkout_url: fullCheckoutUrl
       })
       
+      // ✅ PROTEÇÃO: Redirecionamento direto sem window.open
       setTimeout(() => {
-        const paymentWindow = window.open(fullCheckoutUrl, "_blank") // ✅ CORREÇÃO: URL com UTM
+        console.log('🚀 Redirecionamento PROTEGIDO para:', fullCheckoutUrl);
         
-        if (!paymentWindow) {
-          console.error("Popup bloqueado - tentando redirecionamento");
-          
-          enviarEvento('popup_bloqueado_resultado', {
-            posicao: position,
-            timestamp: new Date().toISOString(),
-            checkout_url: fullCheckoutUrl
-          });
-          
-          // window.location.href = fullCheckoutUrl // ✅ CORREÇÃO: URL com UTM
+        // Tentar window.open primeiro, se falhar usar location.href
+        try {
+          const paymentWindow = window.open(fullCheckoutUrl, "_blank");
+          if (!paymentWindow) {
+            throw new Error('Popup bloqueado');
+          }
+        } catch (error) {
+          console.log('Popup bloqueado, usando redirecionamento direto');
+          window.location.href = fullCheckoutUrl;
         }
       }, 100)
+      
     } catch (error) {
       console.error("Erro na função de compra:", error)
       
@@ -422,16 +456,20 @@ export default function ResultPageFixed() {
     }
   }, [isBrowser])
 
-  if (!isBrowser) {
-    return <div className="min-h-screen bg-black flex items-center justify-center text-white">Cargando...</div>
-  }
-
   return (
     <>
-      {/* O resto do JSX permanece exatamente igual */}
+      {/* ✅ MELHORIA #4: Proteção adicional opcional */}
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <meta name="format-detection" content="telephone=no" />
+        <script dangerouslySetInnerHTML={{
+          __html: `
+            // Proteger window.open original
+            if (typeof window !== 'undefined' && !window._originalOpen) {
+              window._originalOpen = window.open;
+            }
+          `
+        }} />
       </head>
 
       <div className="min-h-screen bg-black overflow-x-hidden w-full max-w-[100vw]">
@@ -567,7 +605,7 @@ export default function ResultPageFixed() {
                       </p>
                     </div>
 
-                    {/* ✅ CONTAINER DO VÍDEO COM dangerouslySetInnerHTML */}
+                    {/* ✅ CONTAINER DO VÍDEO PRESERVADO */}
                     <div className="max-w-3xl mx-auto mb-6">
                       <div 
                         ref={videoContainerRef}
@@ -825,7 +863,7 @@ export default function ResultPageFixed() {
           </div>
         </div>
 
-        {/* ===== CSS GLOBAL ===== */}
+        {/* ===== CSS GLOBAL PRESERVADO ===== */}
         <style jsx global>{`
           * {
             box-sizing: border-box !important;
