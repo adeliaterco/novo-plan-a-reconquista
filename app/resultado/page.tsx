@@ -19,39 +19,142 @@ import {
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { CountdownTimer } from "@/components/countdown-timer"
-import { enviarEvento } from "../../lib/analytics"
 
-// ✅ CORREÇÃO: Função UTM para checkout
-function getUtmString() {
+// 
+// ✅ FUNÇÕES HELPER SEGURAS (MOVIDAS PARA FORA DO COMPONENTE)
+// 
+
+// ✅ CORREÇÃO: Função segura para localStorage - GET
+function safeLocalStorageGet(key: string) {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const item = localStorage.getItem(key);
+      if (!item) return null;
+      
+      const parsed = JSON.parse(item);
+      return parsed;
+    }
+  } catch (error) {
+    console.error(`localStorage[${key}] corrompido, removendo:`, error);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.removeItem(key);
+      }
+    } catch (e) {
+      console.error('Erro ao remover:', e);
+    }
+  }
+  return null;
+}
+
+// ✅ CORREÇÃO: Função segura para localStorage - SET
+function safeLocalStorageSet(key: string, value: any) {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      if (value === undefined || value === null) {
+        localStorage.removeItem(key);
+        return;
+      }
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+  } catch (error) {
+    console.error(`Erro ao salvar localStorage[${key}]:`, error);
+    // Opcional: Adicionar tratamento para QuotaExceededError se necessário
+  }
+}
+
+// ✅ CORREÇÃO: Função segura para acessar window.quizAnswers
+function safeGetQuizAnswers() {
+  try {
+    if (typeof window !== 'undefined') {
+      return (window as any).quizAnswers || {};
+    }
+  } catch (error) {
+    console.error('Erro ao acessar window.quizAnswers:', error);
+  }
+  return {};
+}
+
+// ✅ CORREÇÃO: Função segura para definir window.quizAnswers
+function safeSetQuizAnswers(answers: any) {
+  try {
+    if (typeof window !== 'undefined') {
+      (window as any).quizAnswers = answers;
+    }
+  } catch (error) {
+    console.error('Erro ao definir window.quizAnswers:', error);
+  }
+}
+
+// ✅ CORREÇÃO: Função segura para envio de eventos (analytics)
+function enviarEvento(nombre_evento: string, propriedades: Record<string, any> = {}) {
+  try {
+    if (typeof window !== 'undefined' && (window as any).gtag) {
+      (window as any).gtag('event', nombre_evento, propriedades);
+      console.log('Evento enviado:', nombre_evento, propriedades);
+    }
+  } catch (error) {
+    console.error('Erro ao enviar evento:', error);
+  }
+}
+
+// ✅ CORREÇÃO: Função UTM robusta com fallback e validação
+function getUtmStringForCheckout() {
   if (typeof window === 'undefined') return '';
   
+  const trackingParams = [
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+    'fbclid', 'gclid', 'ref', 'source', 'medium', 'campaign'
+  ];
+  
+  let utmData: Record<string, string> = {};
+
   try {
     const currentUrl = new URL(window.location.href);
-    const utmParams = new URLSearchParams();
-    
-    // Coleta TODOS os parâmetros de tracking
     for (const [key, value] of currentUrl.searchParams.entries()) {
-      if (key.startsWith('utm_') || 
-          key.startsWith('fbclid') || 
-          key.startsWith('gclid') || 
-          key.startsWith('ref') ||
-          key.startsWith('source') ||
-          key.startsWith('medium') ||
-          key.startsWith('campaign')) {
-        utmParams.append(key, value);
+      if (trackingParams.some(param => key.startsWith(param))) {
+        utmData[key] = decodeURIComponent(value);
       }
     }
+
+    if (Object.keys(utmData).length === 0) {
+      const savedUtms = safeLocalStorageGet('capturedUtms');
+      if (savedUtms && typeof savedUtms === 'object') {
+        utmData = { ...savedUtms };
+      }
+    }
+
+    const queryParts: string[] = [];
+    Object.entries(utmData).forEach(([key, value]) => {
+      if (value && typeof value === 'string' && value.trim() !== '' && value.length < 100) { // Adicionado typeof value === 'string'
+        queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+      }
+    });
+
+    const utmString = queryParts.length > 0 ? `&${queryParts.join('&')}` : '';
     
-    const utmString = utmParams.toString();
-    return utmString ? `&${utmString}` : ''; // ✅ usando & porque URL já tem parâmetros
+    console.log('🔍 UTM Final Protegida para Checkout:', {
+      utmsOriginais: utmData,
+      stringLimpa: utmString
+    });
+
+    return utmString;
   } catch (error) {
-    console.error('Erro ao construir UTM para checkout:', error);
+    console.error('Erro ao construir UTM protegida para checkout:', error);
     return '';
   }
 }
 
+// 
+// ✅ COMPONENTE PRINCIPAL
+// 
+
 export default function ResultPageFixed() {
-  // ===== ESTADOS =====
+  // ===== ESTADOS DE HIDRATAÇÃO (MELHORIA #1) =====
+  const [isMounted, setIsMounted] = useState(false);
+  const [isClient, setIsClient] = useState(false); // Substitui isBrowser
+
+  // ===== ESTADOS DO COMPONENTE =====
   const [isLoaded, setIsLoaded] = useState(false)
   const [userGender, setUserGender] = useState<string>("")
   const [userAnswers, setUserAnswers] = useState<object>({})
@@ -62,7 +165,6 @@ export default function ResultPageFixed() {
   const [decryptedText, setDecryptedText] = useState("")
   const [isDecrypting, setIsDecrypting] = useState(true)
   const [activeBuyers, setActiveBuyers] = useState(Math.floor(Math.random() * 5) + 8)
-  const [isBrowser, setIsBrowser] = useState(false)
 
   const contentRef = useRef<HTMLDivElement>(null)
   const startTimeRef = useRef(Date.now())
@@ -71,18 +173,30 @@ export default function ResultPageFixed() {
   const revelationTrackedRef = useRef<Set<number>>(new Set())
   const scrollTrackedRef = useRef<Set<number>>(new Set())
 
-  // ===== VERIFICAÇÃO DE AMBIENTE BROWSER =====
+  // ===== MELHORIA #1: useEffect de hidratação (PRIMEIRO useEffect) =====
   useEffect(() => {
-    setIsBrowser(typeof window !== 'undefined' && typeof document !== 'undefined')
-  }, [])
+    setIsMounted(true);
+    setIsClient(typeof window !== 'undefined');
+  }, []);
 
-  // ===== PERSONALIZAÇÃO BASEADA NO QUIZ =====
+  // ===== MELHORIA #1: Renderização condicional (ANTES de qualquer JSX) =====
+  if (!isMounted || !isClient) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-green-400 text-xl font-mono animate-pulse">
+          Cargando...
+        </div>
+      </div>
+    );
+  }
+
+  // ===== PERSONALIZAÇÃO BASEADA NO QUIZ (MELHORIA #3: PROTEGIDO) =====
   useEffect(() => {
-    if (!isBrowser) return
+    if (!isClient || !isMounted) return; // ✅ MELHORIA #3
 
     try {
-      const savedGender = localStorage.getItem("userGender") || ""
-      const savedAnswers = JSON.parse(localStorage.getItem("quizAnswers") || "{}")
+      const savedGender = safeLocalStorageGet("userGender") || ""
+      const savedAnswers = safeLocalStorageGet("quizAnswers") || {}
       
       if (!savedGender || Object.keys(savedAnswers).length === 0) {
         console.warn("Dados do quiz não encontrados");
@@ -91,14 +205,14 @@ export default function ResultPageFixed() {
         });
       }
       
-      setUserGender(savedGender)
-      setUserAnswers(savedAnswers)
+      setUserGender(savedGender as string)
+      setUserAnswers(savedAnswers as object)
 
       setTimeout(() => setIsLoaded(true), 300)
 
       // ✅ NOVO: Log das UTMs atuais
       console.log('🔍 UTMs atuais na página resultado:', window.location.search);
-      console.log('🔗 UTM string que será anexada:', getUtmString());
+      console.log('🔗 UTM string que será anexada:', getUtmStringForCheckout()); // ✅ MELHORIA #4
 
       enviarEvento("viu_resultado_dopamina_v4", {
         timestamp: new Date().toISOString(),
@@ -125,7 +239,7 @@ export default function ResultPageFixed() {
 
       return () => {
         clearInterval(interval)
-        if (isBrowser) {
+        if (isClient) { // ✅ MELHORIA #5: isBrowser -> isClient
           const timeSpent = (Date.now() - startTimeRef.current) / 1000
           enviarEvento('tempo_pagina_resultado_dopamina', {
             tempo_segundos: timeSpent,
@@ -147,10 +261,12 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [isBrowser, currentRevelation, showVSL, showOffer, showFinalCTA])
+  }, [isClient, isMounted, currentRevelation, showVSL, showOffer, showFinalCTA]) // ✅ MELHORIA #3: Dependências
 
-  // ===== PROGRESSÃO AUTOMÁTICA DE REVELAÇÕES ===== 
+  // ===== PROGRESSÃO AUTOMÁTICA DE REVELAÇÕES (MELHORIA #3: PROTEGIDO) ===== 
   useEffect(() => {
+    if (!isClient || !isMounted) return; // ✅ MELHORIA #3
+
     try {
       if (decryptIntervalRef.current) {
         clearInterval(decryptIntervalRef.current)
@@ -239,9 +355,12 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [userGender])
+  }, [isClient, isMounted, userGender]) // ✅ MELHORIA #3: Dependências
 
+  // ===== SCROLL TRACKING (MELHORIA #3: PROTEGIDO) =====
   useEffect(() => {
+    if (!isClient || !isMounted) return; // ✅ MELHORIA #3
+
     const handleScroll = () => {
       const scrollTop = window.pageYOffset;
       const docHeight = document.documentElement.scrollHeight - window.innerHeight;
@@ -260,10 +379,10 @@ export default function ResultPageFixed() {
     
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [userGender]);
+  }, [isClient, isMounted, userGender]); // ✅ MELHORIA #3: Dependências
 
+  // ===== CARREGAMENTO DO VÍDEO VSL (MELHORIA #3: PROTEGIDO) =====
   useEffect(() => {
-    if (!showVSL || !isBrowser || !videoContainerRef.current) return
 
     const timer = setTimeout(() => {
       if (videoContainerRef.current) {
@@ -329,14 +448,14 @@ export default function ResultPageFixed() {
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [showVSL, isBrowser, userGender])
+  }, [showVSL, isClient, isMounted, userGender]) // ✅ MELHORIA #3, #5: Dependências
 
   // ===== FUNÇÕES DE PERSONALIZAÇÃO =====
   const getPronoun = useCallback(() => userGender === "SOY MUJER" ? "él" : "ella", [userGender])
-  const getOtherPronoun = useCallback(() => userGender === "SOY MUJER" ? "lo" : "la", [userGender])
+  // const getOtherPronoun = useCallback(() => userGender === "SOY MUJER" ? "lo" : "la", [userGender]) // Não usado no JSX
 
   const getPersonalizedSituation = useCallback(() => {
-    const situation = userAnswers?.question7 || "contacto limitado"
+    const situation = (userAnswers as any)?.question7 || "contacto limitado"
     if (typeof situation === 'string') {
       if (situation.includes("contacto cero")) return "Contacto cero"
       if (situation.includes("ignora")) return "Te ignora"
@@ -348,20 +467,20 @@ export default function ResultPageFixed() {
     return "Contacto limitado"
   }, [userAnswers])
 
-  // ✅ CORREÇÃO: Função de compra com UTM preservada
+  // ✅ CORREÇÃO: Função de compra com UTM preservada (MELHORIA #5)
   const handlePurchase = useCallback((position = "principal") => {
-    if (!isBrowser) return
+    if (!isClient) return // ✅ MELHORIA #5: isBrowser -> isClient
 
     try {
       const timeToAction = (Date.now() - startTimeRef.current) / 1000
       
-      // ✅ NOVO: Construir URL com UTMs
-      const utmString = getUtmString();
+      // ✅ MELHORIA #4: Construir URL com UTMs
+      const utmString = getUtmStringForCheckout();
       const baseCheckoutUrl = "https://pay.hotmart.com/F100142422S?off=efckjoa7&checkoutMode=10";
       const fullCheckoutUrl = `${baseCheckoutUrl}${utmString}`;
       
       // ✅ DEBUG: Log da URL final
-      console.log('🔗 URL do checkout com UTM:', fullCheckoutUrl);
+      console.log('🔗 URL PROTEGIDA do checkout:', fullCheckoutUrl); // ✅ MELHORIA #4
       
       // ✅ NOVO: Rastreamento detalhado de compra
       enviarEvento("clicou_comprar_dopamina_v4", {
@@ -413,22 +532,17 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [currentRevelation, userGender, getPersonalizedSituation, isBrowser, showVSL, showOffer, showFinalCTA])
+  }, [currentRevelation, userGender, getPersonalizedSituation, isClient, showVSL, showOffer, showFinalCTA]) // ✅ MELHORIA #5: isBrowser -> isClient
 
   // ===== FEEDBACK TÁTIL =====
   const handleTouchFeedback = useCallback(() => {
-    if (isBrowser && 'vibrate' in navigator) {
+    if (isClient && 'vibrate' in navigator) { // ✅ MELHORIA #5: isBrowser -> isClient
       navigator.vibrate(10)
     }
-  }, [isBrowser])
-
-  if (!isBrowser) {
-    return <div className="min-h-screen bg-black flex items-center justify-center text-white">Cargando...</div>
-  }
+  }, [isClient]) // ✅ MELHORIA #5: isBrowser -> isClient
 
   return (
     <>
-      {/* O resto do JSX permanece exatamente igual */}
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <meta name="format-detection" content="telephone=no" />
