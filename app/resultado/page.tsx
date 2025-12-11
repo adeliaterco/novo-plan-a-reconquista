@@ -390,7 +390,7 @@ export default function ResultPageFixed() {
       })
       
       setTimeout(() => {
-        const paymentWindow = // window.open(fullCheckoutUrl, "_blank") // ✅ CORREÇÃO: URL com UTM
+        const paymentWindow = window.open(fullCheckoutUrl, "_blank") // ✅ CORREÇÃO: URL com UTM
         
         if (!paymentWindow) {
           console.error("Popup bloqueado - tentando redirecionamento");
@@ -401,7 +401,7 @@ export default function ResultPageFixed() {
             checkout_url: fullCheckoutUrl
           });
           
-          window.location.href = fullCheckoutUrl // ✅ CORREÇÃO: URL com UTM
+          // window.location.href = fullCheckoutUrl // ✅ CORREÇÃO: URL com UTM
         }
       }, 100)
     } catch (error) {
