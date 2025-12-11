@@ -390,7 +390,7 @@ export default function ResultPageFixed() {
       })
       
       setTimeout(() => {
-        const paymentWindow = window.open(fullCheckoutUrl, "_blank") // ✅ CORREÇÃO: URL com UTM
+        const paymentWindow = // window.open(fullCheckoutUrl, "_blank") // ✅ CORREÇÃO: URL com UTM
         
         if (!paymentWindow) {
           console.error("Popup bloqueado - tentando redirecionamento");
