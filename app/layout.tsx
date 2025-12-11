@@ -19,8 +19,7 @@ export default function RootLayout({
   return (
     <html lang="pt-BR">
       <head>
-        {/* Google tag (gtag.js) - TEMPORARIAMENTE DESABILITADO PARA TESTE */}
-        {/* 
+        {/* Google tag (gtag.js) */}
         <script async src="https://www.googletagmanager.com/gtag/js?id=G-49QXF2FYMD"></script>
         <script
           dangerouslySetInnerHTML={{
@@ -33,7 +32,6 @@ export default function RootLayout({
             `,
           }}
         />
-        */}
 
         {/* Pixel de Rastreamento - Corrigido com o ID correto */}
         <script
@@ -49,11 +47,10 @@ export default function RootLayout({
           }}
         />
 
-        {/* UTMFY Tracking - Configuração CORRIGIDA para excluir Hotmart */}
+        {/* UTMFY Tracking - Configuração para Hotmart */}
         <script
           src="https://cdn.utmify.com.br/scripts/utms/latest.js"
           data-utmify-prevent-subids
-          data-utmify-exclude-domains="pay.hotmart.com"
           async
           defer
         ></script>
