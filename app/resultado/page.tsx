@@ -19,40 +19,143 @@ import {
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { CountdownTimer } from "@/components/countdown-timer"
-import { enviarEvento } from "../../lib/analytics"
 
-// ✅ CORREÇÃO: Função UTM para checkout
-function getUtmString() {
+// 
+// FUNÇÕES HELPER (COPIADAS EXATAMENTE COMO ESPECIFICADO)
+// 
+
+// ✅ CORREÇÃO: Função segura para localStorage - GET
+function safeLocalStorageGet(key: string): any | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const item = localStorage.getItem(key);
+      if (!item) return null;
+      
+      const parsed = JSON.parse(item);
+      return parsed;
+    }
+  } catch (error) {
+    console.error(`localStorage[${key}] corrompido, removendo:`, error);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.removeItem(key);
+      }
+    } catch (e) {
+      console.error('Erro ao remover:', e);
+    }
+  }
+  return null;
+}
+
+// ✅ CORREÇÃO: Função segura para localStorage - SET
+function safeLocalStorageSet(key: string, value: any) {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      if (value === undefined || value === null) {
+        localStorage.removeItem(key);
+        return;
+      }
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+  } catch (error) {
+    console.error(`Erro ao salvar localStorage[${key}]:`, error);
+    // if (error.name === 'QuotaExceededError') { // Não é necessário limpar cache aqui, apenas no quiz
+    //   clearCorruptedCache(); 
+    // }
+  }
+}
+
+// ✅ CORREÇÃO: Função segura para acessar window.quizAnswers
+function safeGetQuizAnswers(): object {
+  try {
+    if (typeof window !== 'undefined') {
+      return (window as any).quizAnswers || {};
+    }
+  } catch (error) {
+    console.error('Erro ao acessar window.quizAnswers:', error);
+  }
+  return {};
+}
+
+// ✅ CORREÇÃO: Função segura para definir window.quizAnswers
+function safeSetQuizAnswers(answers: object) {
+  try {
+    if (typeof window !== 'undefined') {
+      (window as any).quizAnswers = answers;
+    }
+  } catch (error) {
+    console.error('Erro ao definir window.quizAnswers:', error);
+  }
+}
+
+// ✅ CORREÇÃO: Função UTM robusta com fallback para checkout
+function getUtmStringForCheckout(): string {
   if (typeof window === 'undefined') return '';
   
+  const trackingParams = [
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+    'fbclid', 'gclid', 'ref', 'source', 'medium', 'campaign'
+  ];
+  
+  let utmData: { [key: string]: string } = {};
+
   try {
     const currentUrl = new URL(window.location.href);
-    const utmParams = new URLSearchParams();
-    
-    // Coleta TODOS os parâmetros de tracking
     for (const [key, value] of currentUrl.searchParams.entries()) {
-      if (key.startsWith('utm_') || 
-          key.startsWith('fbclid') || 
-          key.startsWith('gclid') || 
-          key.startsWith('ref') ||
-          key.startsWith('source') ||
-          key.startsWith('medium') ||
-          key.startsWith('campaign')) {
-        utmParams.append(key, value);
+      if (trackingParams.some(param => key.startsWith(param))) {
+        utmData[key] = decodeURIComponent(value);
       }
     }
+
+    if (Object.keys(utmData).length === 0) {
+      const savedUtms = safeLocalStorageGet('capturedUtms');
+      if (savedUtms && typeof savedUtms === 'object') {
+        utmData = { ...savedUtms };
+      }
+    }
+
+    const queryParts: string[] = [];
+    Object.entries(utmData).forEach(([key, value]) => {
+      if (value && value.trim() !== '' && value.length < 100) { // Limite de 100 caracteres para evitar URLs muito longas
+        queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+      }
+    });
+
+    const utmString = queryParts.length > 0 ? `&${queryParts.join('&')}` : '';
     
-    const utmString = utmParams.toString();
-    return utmString ? `&${utmString}` : ''; // ✅ usando & porque URL já tem parâmetros
+    console.log('🔍 UTM Final Protegida:', {
+      utmsOriginais: utmData,
+      stringLimpa: utmString
+    });
+
+    return utmString;
   } catch (error) {
-    console.error('Erro ao construir UTM para checkout:', error);
+    console.error('Erro ao construir UTM protegida:', error);
     return '';
   }
 }
 
+// ✅ CORREÇÃO: Função segura para envio de eventos
+function enviarEvento(nombre_evento: string, propiedades: object = {}) {
+  try {
+    if (typeof window !== 'undefined' && (window as any).gtag) {
+      (window as any).gtag('event', nombre_evento, propiedades);
+      console.log('Evento enviado:', nombre_evento, propiedades);
+    }
+  } catch (error) {
+    console.error('Erro ao enviar evento:', error);
+  }
+}
+
+// 
+// COMPONENTE PRINCIPAL
+// 
+
 export default function ResultPageFixed() {
   // ===== ESTADOS =====
   const [isLoaded, setIsLoaded] = useState(false)
+  const [isMounted, setIsMounted] = useState(false) // ✅ NOVO: Estado para hidratação
+  const [isClient, setIsClient] = useState(false)   // ✅ NOVO: Estado para ambiente cliente
   const [userGender, setUserGender] = useState<string>("")
   const [userAnswers, setUserAnswers] = useState<object>({})
   const [currentRevelation, setCurrentRevelation] = useState(0)
@@ -62,27 +165,32 @@ export default function ResultPageFixed() {
   const [decryptedText, setDecryptedText] = useState("")
   const [isDecrypting, setIsDecrypting] = useState(true)
   const [activeBuyers, setActiveBuyers] = useState(Math.floor(Math.random() * 5) + 8)
-  const [isBrowser, setIsBrowser] = useState(false)
 
+  // ===== REFS =====
   const contentRef = useRef<HTMLDivElement>(null)
   const startTimeRef = useRef(Date.now())
-  const decryptIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const decryptIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null) // ✅ Tipo corrigido
   const videoContainerRef = useRef<HTMLDivElement>(null)
   const revelationTrackedRef = useRef<Set<number>>(new Set())
   const scrollTrackedRef = useRef<Set<number>>(new Set())
 
-  // ===== VERIFICAÇÃO DE AMBIENTE BROWSER =====
+  // 
+  // ORDEM CORRETA DE useEffect (CRÍTICO - SEM ERROS #310)
+  // 
+
+  // ✅ PRIMEIRO useEffect - HIDRATAÇÃO (Sempre chamado, define ambiente)
   useEffect(() => {
-    setIsBrowser(typeof window !== 'undefined' && typeof document !== 'undefined')
+    setIsMounted(true)
+    setIsClient(typeof window !== 'undefined' && typeof document !== 'undefined')
   }, [])
 
-  // ===== PERSONALIZAÇÃO BASEADA NO QUIZ =====
+  // ✅ SEGUNDO useEffect - INICIALIZAÇÃO (Protegido por isMounted/isClient)
   useEffect(() => {
-    if (!isBrowser) return
+    if (!isMounted || !isClient) return // ✅ Proteção contra erro #310
 
     try {
-      const savedGender = localStorage.getItem("userGender") || ""
-      const savedAnswers = JSON.parse(localStorage.getItem("quizAnswers") || "{}")
+      const savedGender = safeLocalStorageGet("userGender") || ""
+      const savedAnswers = safeLocalStorageGet("quizAnswers") || {}
       
       if (!savedGender || Object.keys(savedAnswers).length === 0) {
         console.warn("Dados do quiz não encontrados");
@@ -96,16 +204,15 @@ export default function ResultPageFixed() {
 
       setTimeout(() => setIsLoaded(true), 300)
 
-      // ✅ NOVO: Log das UTMs atuais
       console.log('🔍 UTMs atuais na página resultado:', window.location.search);
-      console.log('🔗 UTM string que será anexada:', getUtmString());
+      console.log('🔗 UTM string que será anexada:', getUtmStringForCheckout());
 
       enviarEvento("viu_resultado_dopamina_v4", {
         timestamp: new Date().toISOString(),
         user_gender: savedGender,
         version: "matrix_continuity",
         tem_dados_quiz: Object.keys(savedAnswers).length > 0,
-        utm_params: window.location.search // ✅ NOVO: Log das UTMs
+        utm_params: window.location.search
       })
 
       startTimeRef.current = Date.now()
@@ -125,7 +232,7 @@ export default function ResultPageFixed() {
 
       return () => {
         clearInterval(interval)
-        if (isBrowser) {
+        if (isClient) { // ✅ Usando isClient
           const timeSpent = (Date.now() - startTimeRef.current) / 1000
           enviarEvento('tempo_pagina_resultado_dopamina', {
             tempo_segundos: timeSpent,
@@ -147,10 +254,12 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [isBrowser, currentRevelation, showVSL, showOffer, showFinalCTA])
+  }, [isMounted, isClient, currentRevelation, showVSL, showOffer, showFinalCTA]) // ✅ Dependências atualizadas
 
-  // ===== PROGRESSÃO AUTOMÁTICA DE REVELAÇÕES ===== 
+  // ✅ TERCEIRO useEffect - PROGRESSÃO AUTOMÁTICA DE REVELAÇÕES (Protegido)
   useEffect(() => {
+    if (!isMounted || !isClient) return // ✅ Proteção contra erro #310
+
     try {
       if (decryptIntervalRef.current) {
         clearInterval(decryptIntervalRef.current)
@@ -239,9 +348,12 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [userGender])
+  }, [isMounted, isClient, userGender]) // ✅ Dependências atualizadas
 
+  // ✅ QUARTO useEffect - SCROLL TRACKING (Protegido)
   useEffect(() => {
+    if (!isMounted || !isClient) return // ✅ Proteção contra erro #310
+
     const handleScroll = () => {
       const scrollTop = window.pageYOffset;
       const docHeight = document.documentElement.scrollHeight - window.innerHeight;
@@ -260,10 +372,11 @@ export default function ResultPageFixed() {
     
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [userGender]);
+  }, [isMounted, isClient, userGender]); // ✅ Dependências atualizadas
 
+  // ✅ QUINTO useEffect - VSL VIDEO (Protegido)
   useEffect(() => {
-    if (!showVSL || !isBrowser || !videoContainerRef.current) return
+    if (!isMounted || !isClient || !showVSL) return // ✅ Proteção contra erro #310
 
     const timer = setTimeout(() => {
       if (videoContainerRef.current) {
@@ -329,14 +442,17 @@ export default function ResultPageFixed() {
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [showVSL, isBrowser, userGender])
+  }, [showVSL, isMounted, isClient, userGender]) // ✅ Dependências atualizadas
 
-  // ===== FUNÇÕES DE PERSONALIZAÇÃO =====
+  // 
+  // FUNÇÕES DE PERSONALIZAÇÃO E CALLBACKS
+  // 
+
   const getPronoun = useCallback(() => userGender === "SOY MUJER" ? "él" : "ella", [userGender])
   const getOtherPronoun = useCallback(() => userGender === "SOY MUJER" ? "lo" : "la", [userGender])
 
   const getPersonalizedSituation = useCallback(() => {
-    const situation = userAnswers?.question7 || "contacto limitado"
+    const situation = (userAnswers as any)?.question7 || "contacto limitado"
     if (typeof situation === 'string') {
       if (situation.includes("contacto cero")) return "Contacto cero"
       if (situation.includes("ignora")) return "Te ignora"
@@ -350,20 +466,17 @@ export default function ResultPageFixed() {
 
   // ✅ CORREÇÃO: Função de compra com UTM preservada
   const handlePurchase = useCallback((position = "principal") => {
-    if (!isBrowser) return
+    if (!isClient) return // ✅ Usando isClient
 
     try {
       const timeToAction = (Date.now() - startTimeRef.current) / 1000
       
-      // ✅ NOVO: Construir URL com UTMs
-      const utmString = getUtmString();
+      const utmString = getUtmStringForCheckout(); // ✅ Usando a nova função UTM
       const baseCheckoutUrl = "https://pay.hotmart.com/F100142422S?off=efckjoa7&checkoutMode=10";
       const fullCheckoutUrl = `${baseCheckoutUrl}${utmString}`;
       
-      // ✅ DEBUG: Log da URL final
-      console.log('🔗 URL do checkout com UTM:', fullCheckoutUrl);
+      console.log('🔗 URL PROTEGIDA do checkout:', fullCheckoutUrl); // ✅ ADICIONAR
       
-      // ✅ NOVO: Rastreamento detalhado de compra
       enviarEvento("clicou_comprar_dopamina_v4", {
         posicao: position,
         revelacao_atual: currentRevelation,
@@ -376,7 +489,6 @@ export default function ResultPageFixed() {
         viu_oferta: showOffer,
         viu_cta_final: showFinalCTA,
         version: "matrix_continuity",
-        // ✅ NOVO: Incluir UTMs no evento
         utm_data: utmString
       })
       
@@ -386,11 +498,11 @@ export default function ResultPageFixed() {
         posicao_cta: position,
         version: "matrix_continuity",
         timestamp: new Date().toISOString(),
-        checkout_url: fullCheckoutUrl // ✅ NOVO: Log da URL para debug
+        checkout_url: fullCheckoutUrl
       })
       
       setTimeout(() => {
-        const paymentWindow = window.open(fullCheckoutUrl, "_blank") // ✅ CORREÇÃO: URL com UTM
+        const paymentWindow = window.open(fullCheckoutUrl, "_blank")
         
         if (!paymentWindow) {
           console.error("Popup bloqueado - tentando redirecionamento");
@@ -401,7 +513,7 @@ export default function ResultPageFixed() {
             checkout_url: fullCheckoutUrl
           });
           
-          // window.location.href = fullCheckoutUrl // ✅ CORREÇÃO: URL com UTM
+          // window.location.href = fullCheckoutUrl
         }
       }, 100)
     } catch (error) {
@@ -413,22 +525,33 @@ export default function ResultPageFixed() {
         timestamp: new Date().toISOString()
       });
     }
-  }, [currentRevelation, userGender, getPersonalizedSituation, isBrowser, showVSL, showOffer, showFinalCTA])
+  }, [currentRevelation, userGender, getPersonalizedSituation, isClient, showVSL, showOffer, showFinalCTA]) // ✅ Dependências atualizadas
 
   // ===== FEEDBACK TÁTIL =====
   const handleTouchFeedback = useCallback(() => {
-    if (isBrowser && 'vibrate' in navigator) {
+    if (isClient && 'vibrate' in navigator) { // ✅ Usando isClient
       navigator.vibrate(10)
     }
-  }, [isBrowser])
+  }, [isClient])
 
-  if (!isBrowser) {
-    return <div className="min-h-screen bg-black flex items-center justify-center text-white">Cargando...</div>
+  // 
+  // RENDERING CONDICIONAL DE LOADING SCREEN (CRÍTICO PARA HIDRATAÇÃO)
+  // 
+  if (!isMounted || !isClient) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-green-400 text-xl font-mono animate-pulse">
+          Cargando...
+        </div>
+      </div>
+    )
   }
 
+  // 
+  // JSX PRINCIPAL
+  // 
   return (
     <>
-      {/* O resto do JSX permanece exatamente igual */}
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <meta name="format-detection" content="telephone=no" />
@@ -567,7 +690,6 @@ export default function ResultPageFixed() {
                       </p>
                     </div>
 
-                    {/* ✅ CONTAINER DO VÍDEO COM dangerouslySetInnerHTML */}
                     <div className="max-w-3xl mx-auto mb-6">
                       <div 
                         ref={videoContainerRef}
@@ -588,7 +710,7 @@ export default function ResultPageFixed() {
               )}
             </AnimatePresence>
 
-            {/* ===== RESTO DO CÓDIGO CONTINUA IGUAL... ===== */}
+            {/* ===== REVELAÇÃO 3: OFERTA COMPLETA ===== */}
             <AnimatePresence>
               {showOffer && (
                 <motion.div
@@ -696,7 +818,7 @@ export default function ResultPageFixed() {
                           ⏰ PRECIO ESPECIAL PARA QUIENES VIERON LA DEMOSTRACIÓN:
                         </p>
                         <div className="mobile-countdown font-black text-white mb-2">
-                          <CountdownTimer minutes={47} seconds={0} />
+                          <CountdownTimer />
                         </div>
                         <p className="text-red-300 mobile-small-text">
                           Después vuelve a $67. Solo para quienes completaron el análisis.
@@ -1092,9 +1214,9 @@ export default function ResultPageFixed() {
 
           @media (min-width: 640px) {
             .max-w-4xl { max-width: 56rem !important; }
-            .max-w-3xl { max-width: 48rem !important; }
-            .max-w-2xl { max-width: 42rem !important; }
-            .max-w-md { max-width: 28rem !important; }
+            .max-w-3xl { max-w: 48rem !important; }
+            .max-w-2xl { max-w: 42rem !important; }
+            .max-w-md { max-w: 28rem !important; }
           }
 
           @media (prefers-color-scheme: dark) {
